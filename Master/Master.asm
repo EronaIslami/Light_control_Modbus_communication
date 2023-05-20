@@ -1,0 +1,558 @@
+CRC_ACCUM_LOW 		EQU 0DH ; bank 1 regjistri R5
+CRC_ACCUM_HI 		EQU 0EH ; bank 1 regjistri R6
+CRC_MASK_LSB		EQU 001H ;CRC-16 polinomi
+CRC_MASK_MSB 		EQU 0A0H
+TEMP_CRC_H 			EQU 40H
+TEMP_CRC_L 			EQU 41H
+VLERA_BAJTIT 		EQU 60H
+t15 					EQU 63952  ;VONESA PREJ 1.5tch
+t35 					EQU 61848  ;VONESA PREJ 3.5tch
+t20 					EQU 63416 ;VONESA PREJ 2tch
+SLAVE_1_ID 			EQU 20H
+SLAVE_4_ID 			EQU 24H
+SLAVE_3_ID			EQU 28H
+SLAVE_2_ID 			EQU 30H
+VENDOSJA_PAKETIT 	EQU 50H
+PACKET_ERROR 		EQU 64H
+BYTE_COUNT 			EQU 63H
+COIL_START_ADDRESS 	EQU 1FH
+PACKET_ERROR1 		EQU 67H
+PARITY_CHECK 		EQU 42H
+PACKET_SELECT 		EQU 70H
+ORG 0000H
+	LJMP MAIN
+ORG 000BH
+	LJMP T0ISR
+ORG 0023H
+	LJMP SERVEC
+ORG 0030H
+MAIN:
+	MOV PACKET_ERROR,#00H
+	MOV PACKET_ERROR1,#00H
+	MOV PACKET_SELECT,#50H
+	MOV SP,#35H
+	MOV SCON,#0D0H ;TI=1, RI=0, REN=1
+	MOV TMOD,#21H ;TIMER1=MOD2-AUTORELOAD,TIMER0=MOD1-16BIT
+	MOV PCON,#00H ;SINGLE BAUD RATE
+	MOV TH1,#0FDH ;9600 BAUD, #0xF3=>1200 BAUD (12 MHz)
+	SETB TR1 ;startohet timeri per portin serik
+	MOV TH0,#HIGH t35
+	MOV TL0,#LOW t35
+	SETB TR0
+	MOV A,#00
+	MOV IE,#92H ;lejohet interapti i tajmerit0 dhe iportit serik
+	MOV 20H,#00H	;Slave 1
+	MOV 21H,#00H
+	MOV 22H,#00H	;Slave 3
+	
+	CLR TI
+	SETB P3.2
+
+	SJMP $
+	
+	
+	
+;==============================================================
+;				GJENERIMI I KERKESES
+;==============================================================
+T0ISR:
+	MOV A,PACKET_ERROR	;ZGJEDHJA SE CILI PAKET ESHTE PER DERGIM
+	; ANALIZON NESE KA PASUR GABIM NE PAKET
+	CJNE A,#0FFH,REPEAT_PACKET ; --- > 
+	; përgjigje me gabim
+	SJMP SLAVE_2_P1
+REPEAT_PACKET:	
+	 MOV A,PACKET_SELECT
+	 CLR C
+	 CJNE A,#50H,ANALYZE
+	 SJMP SLAVE_P1
+	 ANALYZE:
+	 CJNE A,#53H,ANALYZE1
+	 SJMP SLAVE_P3
+ANALYZE1:
+	 CJNE A,#51H,ANALYZE2
+	 SJMP SLAVE_P4
+ANALYZE2:
+	 JC SLAVE_2_P1
+	 SJMP SLAVE_2_P2
+	 
+SLAVE_P1:
+	CLR TR0
+	CLR TF0
+	MOV DPTR,#0FFFH
+	LCALL SEND_PACKET
+	RETI
+	
+SLAVE_P3:
+	CLR TR0
+	CLR TF0
+	MOV DPTR,#1300H-1
+	LCALL SEND_PACKET
+	RETI
+	
+	SLAVE_P4:
+	CLR TR0
+	CLR TF0
+	MOV DPTR,#1100H-1
+	LCALL SEND_PACKET
+	RETI
+	
+SLAVE_2_P1:
+	CLR TR0
+	CLR TF0
+	MOV DPTR,#14FFH
+	LCALL SEND_PACKET
+	RETI	
+	
+SLAVE_2_P2:
+	CLR TR0
+	CLR TF0
+	MOV DPTR,#11FFH
+	LCALL SEND_PACKET
+	RETI
+	
+	
+
+;=========================================================
+;			PRANIMI I PAKETIT DHE ZGJEDHJA E SLAVE-IT
+; 			PER TE CILIN ESHTE PAKETI I ARDHSHEM
+;=========================================================
+SERVEC:
+	MOV IE,#90H
+	CLR TR0
+	CLR TF0
+	LCALL PACKET_RECEIVE
+	MOV R1,#50H
+	MOV A,@R1
+	
+SLAVE_1:
+	CJNE A,#20H,SLAVE_3	;CAKTIMI SE PER CILEN PJESE ESHTE KERKESA
+	; Slave 1 Response --- > Ndërprerësi 1
+	LCALL CRC_CALC	;LLOGARITJA E CRC-SE
+	MOV A,TEMP_CRC_H
+	CJNE A,CRC_ACCUM_HI,PACKET_END_1
+	MOV A,TEMP_CRC_L
+	CJNE A,CRC_ACCUM_LOW,PACKET_END_1
+	LCALL ANALYZE_SLAVE1
+	     MOV PACKET_SELECT,#53H
+	LCALL PACKET_END
+	RETI
+
+PACKET_END_1: LJMP PACKET_END
+SLAVE_3:
+	CJNE A,#24H,SLAVE_4	;CAKTIMI SE PER CILEN PJESE ESHTE KERKESA
+	; Slave 3 Response --- > Ndërprerësi 2
+	LCALL CRC_CALC	;LLOGARITJA E CRC-SE
+	MOV A,TEMP_CRC_H
+	CJNE A,CRC_ACCUM_HI,PACKET_END
+	MOV A,TEMP_CRC_L
+	CJNE A,CRC_ACCUM_LOW,PACKET_END
+	LCALL ANALYZE_SLAVE3
+	    ;MOV PACKET_SELECT,#53H
+	LCALL PACKET_END
+	RETI
+	
+SLAVE_4:
+	CJNE A,#28H,SLAVE_2	;CAKTIMI SE PER CILEN PJESE ESHTE KERKESA
+	; Slave 3 Response --- > Ndërprerësi 2
+	LCALL CRC_CALC	;LLOGARITJA E CRC-SE
+	MOV A,TEMP_CRC_H
+	CJNE A,CRC_ACCUM_HI,PACKET_END
+	MOV A,TEMP_CRC_L
+	CJNE A,CRC_ACCUM_LOW,PACKET_END
+	LCALL ANALYZE_SLAVE4
+	LCALL PACKET_END
+	RETI
+
+SLAVE_2:
+	; Slave 2 Response --- > Drita
+	MOV A,55H
+	JZ SLAVE2_P2
+	MOV R1,#50H
+	MOV A,@R1	 
+	CJNE A,#SLAVE_2_ID,SLAVE_ID_ERROR
+	LCALL CRC_CALC
+	MOV A,TEMP_CRC_H
+	CJNE A,CRC_ACCUM_HI,PACKET_END
+	MOV A,TEMP_CRC_L
+	CJNE A,CRC_ACCUM_LOW,PACKET_END
+	LCALL ANALYZE_SLAVE2
+	LCALL PACKET_END
+	RETI
+	
+	
+SLAVE2_P2:
+	MOV R1,#50H
+	MOV A,@R1	 
+	CJNE A,#SLAVE_2_ID,SLAVE_ID_ERROR
+
+	LCALL CRC_CALC
+	MOV A,TEMP_CRC_H
+	CJNE A,CRC_ACCUM_HI,PACKET_END
+	MOV A,TEMP_CRC_L
+	CJNE A,CRC_ACCUM_LOW,PACKET_END
+	LCALL ANALYZE_SLAVE2_1
+	LCALL PACKET_END
+	RETI
+	
+SLAVE_ID_ERROR:
+	MOV TH0,#0FFH
+	MOV TL0,#0F0H
+	MOV IE,#92H
+	CLR TF0
+	SETB TR0
+	SETB P3.2
+	RETI
+	
+;==================================================================
+;				PERFUNDIMI I PAKETIT
+;==================================================================
+PACKET_END:
+	MOV R1,#50H
+	MOV R0,#0
+	MOV IE,#92H
+	CLR TF0
+	MOV TH0,#HIGH t35
+	MOV TL0,#LOW t35
+	SETB P3.2
+	SETB TR0
+	RET
+
+	
+	
+;==========================================================
+;				PRANIMI I PAKETIT
+;==========================================================
+PACKET_RECEIVE:
+	MOV R1,#50H
+	MOV R0,#0
+BYTE_RECEIVE:
+	CLR TR0
+	MOV A,SBUF
+	CLR RI
+	LCALL PARITY_BIT
+	PUSH ACC
+	MOV A,PARITY_CHECK
+	JNZ PARITY_ERROR
+	POP ACC
+	MOV @R1,A
+	INC R0
+	INC R1
+	MOV TH0,#HIGH t15
+	MOV TL0,#LOW t15
+	SETB TR0
+ANALYZE_T:
+	JNB TF0,ANALYZE_RI
+	SJMP DELAY_TIMEOUT
+ANALYZE_RI:
+	JB RI,BYTE_RECEIVE
+	SJMP ANALYZE_T
+PARITY_ERROR:
+	POP ACC
+DELAY_TIMEOUT:
+	CLR TF0
+	CLR TR0
+	DEC R1
+	DEC R0
+	MOV TEMP_CRC_H,@R1
+	DEC R1
+	DEC R0
+	MOV TEMP_CRC_L,@R1
+	DEC R1
+	CLR TF0
+	MOV TH0,#HIGH t20
+	MOV TL0,#LOW t20
+	SETB TR0
+WAIT_2TCH:JNB TF0,WAIT_2TCH
+	RET
+
+	
+;======================================================
+;			ANALIZA E SLAVE DHE PAKETAVE
+;======================================================	
+ANALYZE_SLAVE1:
+	MOV R1,#51H		; Function Code position
+	MOV A,@R1
+	CJNE A,#01H,FUNCTION_ERROR
+	INC R1			; Byte Count position
+	MOV A,@R1
+	MOV BYTE_COUNT,A
+	INC R1			; Data Byte position
+	MOV A,@R1
+	CLR C
+	;
+	; A ka ndryshim të gjendjes?
+	; --- > komanda te Slave i dritës bartet vetëm kur ka ndryshim të gjendjes së dritës
+	;
+;	CJNE A,20H,TRANSITION
+;	MOV PACKET_SELECT,#50H
+;	SJMP SELECT
+;TRANSITION:
+;	JC LIGHT_OFF
+;	MOV PACKET_SELECT,#00H
+;	SJMP SELECT
+;LIGHT_OFF:
+;	MOV PACKET_SELECT,#0FFH
+;SELECT:
+	MOV 20H,A
+	;
+	;
+	; Gjendja e ndërprerësit bartet te drita
+	; --- > komanda te Slave i dritës bartet pas çdo leximi të gjemdjes së ndërprerësit
+	;
+;	JNB ACC.0,LIGHT_OFF	; --- > Light OFF
+;	; --- > Light ON
+;LIGHT_ON:
+;	MOV PACKET_SELECT,#00H
+;	SJMP SELECT
+;LIGHT_OFF:
+;	MOV PACKET_SELECT,#0FFH
+;SELECT:
+;	MOV 20H,A
+	;
+	RET
+FUNCTION_ERROR:
+	LCALL PACKET_END
+	RET
+
+
+ANALYZE_SLAVE3:
+	MOV R1,#51H
+	MOV A,@R1
+	CJNE A,#01H,FUNCTION_ERROR
+	INC R1
+	MOV A,@R1
+	MOV BYTE_COUNT,A
+	INC R1
+	MOV A,@R1
+	CLR C
+	;
+	; Funksionaliteti i ndërprerësit alternativ
+	;
+mov c,acc.0
+anl c,20h.0
+cpl c ; toggle the value of C (used as flag)
+jnc TURN_ON ; if C=0 (flag off), turn on the light
+; if C=1 (flag on), turn off the light
+CLR P2.0 ; Set bit 0 of register P2 to logic low to turn off the light
+MOV PACKET_SELECT,#0FFH ; set PACKET_SELECT to 0xFF (light off packet)
+SJMP SELECT3
+TURN_ON:
+CJNE A,22H,TRANSITION3
+MOV PACKET_SELECT,#51H
+SJMP SELECT3
+TRANSITION3:
+JC LIGHT_OFF3
+MOV PACKET_SELECT,#00H
+SJMP SELECT3
+LIGHT_OFF3:
+CLR P2.0 ; Set bit 0 of register P2 to logic low to turn off the light
+MOV PACKET_SELECT,#0FFH
+SELECT3:
+MOV 22H,A
+RET
+
+	
+ANALYZE_SLAVE4:
+	MOV R1,#51H
+	MOV A,@R1
+	CJNE A,#01H,FUNCTION_ERROR
+	INC R1
+	MOV A,@R1
+	MOV BYTE_COUNT,A
+	INC R1
+	MOV A,@R1
+	CLR C
+	;
+	; Funksionaliteti i ndërprerësit alternativ
+	;
+	mov c,acc.0
+	;cpl c
+	anl c,20h.0
+	;mov 20h.1,c
+	;mov c,20h.0
+	;cpl c
+	;or;l c,acc.0
+	;anl c,20h.1
+	;cpl c
+	;mov c, 20h.0
+	cpl c
+	;clr c
+	;
+	;CJNE A,21H,TRANSITION3
+	;MOV PACKET_SELECT,#51H
+	;SJMP SELECT3
+;TRANSITION3:
+	JC LIGHT_OFF4
+	MOV PACKET_SELECT,#00H
+	SJMP SELECT4
+LIGHT_OFF4:
+	MOV PACKET_SELECT,#0FFH
+SELECT4:
+	MOV 21H,A
+	RET
+
+	
+ANALYZE_SLAVE2:
+	MOV R1,#51H
+	MOV A,@R1
+	CJNE A,#06,FUNKSION_GABIM1
+	INC R1
+	MOV A,@R1
+	CJNE A,#00H,FUNKSION_GABIM1
+	INC R1
+	MOV A,@R1
+	CJNE A,#01H,FUNKSION_GABIM1
+	INC R1
+	MOV A,@R1
+	CJNE A,#00H,FUNKSION_GABIM1
+	INC R1
+	MOV A,@R1
+	CJNE A,#01H,FUNKSION_GABIM1
+	MOV PACKET_ERROR,#00H
+	MOV PACKET_SELECT,#50H
+	RET
+FUNKSION_GABIM1:
+	MOV PACKET_ERROR,#0FFH
+	RET
+	
+ANALYZE_SLAVE2_1:
+	MOV R1,#51H
+	MOV A,@R1
+	CJNE A,#06,FUNKSION_GABIM2
+	INC R1
+	MOV A,@R1
+	CJNE A,#00H,FUNKSION_GABIM2
+	INC R1
+	MOV A,@R1
+	CJNE A,#01H,FUNKSION_GABIM2
+	INC R1
+	MOV A,@R1
+	CJNE A,#00H,FUNKSION_GABIM2
+	INC R1
+	MOV A,@R1
+	CJNE A,#00H,FUNKSION_GABIM2
+	MOV PACKET_ERROR1,#00H
+	MOV PACKET_SELECT,#50H
+	RET
+FUNKSION_GABIM2:
+	MOV PACKET_ERROR1,#0FFH
+	RET
+	
+	
+
+;===================================================
+;			LLOGARITJA E CRC-SE
+;===================================================
+
+CRC_CALC:
+	MOV A,R0
+        MOV R3,A
+	MOV CRC_ACCUM_LOW,#0FFH ;fshihet crc accum para fillimit
+	MOV CRC_ACCUM_HI,#0FFH
+	MOV R1,#50H
+	PUSH 00H
+	CC10:
+	MOV A,@R1
+	XRL A,CRC_ACCUM_LOW
+	MOV CRC_ACCUM_LOW,A
+	MOV R6,#8 ;R6 sherben si numrues i 8 bitave ne bajt
+	CC20:
+	MOV A,CRC_ACCUM_HI ;merret bajti i larte
+	CLR C ;mbushet me 0
+	RRC A ;shiftohet djathtas
+	MOV CRC_ACCUM_HI,A
+	MOV A,CRC_ACCUM_LOW ;dhe per bajtin e ulet
+	RRC A ;shiftohet djathtas
+	MOV CRC_ACCUM_LOW,A
+	JNC CC30
+	MOV A,CRC_ACCUM_LOW
+	XRL A,#CRC_MASK_LSB
+	MOV CRC_ACCUM_LOW,A
+	MOV A,CRC_ACCUM_HI
+	XRL A,#CRC_MASK_MSB
+	MOV CRC_ACCUM_HI,A
+	CC30:
+	DJNZ R6,CC20 ;perseritet tete here
+	INC R1 ;gati per bajtin e ardhshem te mesazhit
+	DJNZ R0,CC10 ;nje bajt me pak per te llogarite
+	pop 00H
+	RET
+	
+	
+;================================================
+;			PARITY_CHECK
+;================================================
+PARITY_BIT:
+	MOV C,RB8
+	MOV 20H,C
+	MOV C,P
+	MOV 28H,C
+	PUSH ACC
+	MOV A,24H
+	CJNE A,25H,BYTE_ERROR
+	POP ACC
+	MOV PARITY_CHECK,#00H
+	RET
+BYTE_ERROR:
+	MOV PARITY_CHECK,#0FFH
+	RET
+;===================================================
+;			RUTINA PER DERGIMIN E PAKETIT
+;===================================================
+SEND_PACKET:
+	SJMP FIRST
+LOOP:
+	MOV C,P
+	MOV TB8,C
+	MOV SBUF,A
+WAIT: JNB TI,WAIT
+FIRST:
+	CLR TI
+	INC DPTR
+	MOV A,#00
+	MOVC A,@A+DPTR
+	CJNE A,#3,LOOP
+	CLR TI
+	MOV TH0,#00H
+	MOV TL0,#00H
+	SETB TR0
+	CLR P3.2
+	RET
+	
+
+
+ORG 1000H
+;============================================================
+;		PAKETI I KERKESES PER SLAVE 1
+;============================================================
+	DB SLAVE_1_ID,01H,00H,20H,00H,01H,0FAH,0B1H,3
+	
+
+ORG 1100H
+;============================================================
+;		PAKETI I KERKESES PER SLAVE 3
+;============================================================
+	DB SLAVE_3_ID,01H,00H,20H,00H,01H,0FBH,0F9H,3
+	
+	
+ORG  1300H   ;  ?????
+;============================================================
+;		PAKETI I KERKESES PER SLAVE 3
+;============================================================
+	DB SLAVE_4_ID,01H,00H,20H,00H,01H,0FBH,035H,3
+	
+
+;============================================================
+;		PAKETI I KERKESES PER SLAVE 2-LIGHT OFF
+;============================================================	
+ORG 1200H
+	 DB SLAVE_2_ID,06H,00H,01H,00H,00H,0DCH,2BH,3
+	 
+	 
+ORG 1500H
+;============================================================
+;		PAKETI I KERKESES PER SLAVE 2-LIGHT ON
+;============================================================
+	DB SLAVE_2_ID,06H,00H,01H,00H,01H,1DH,0EBH,3
+END
